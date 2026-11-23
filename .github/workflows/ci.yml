@@ -43,10 +43,18 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install dependencies
         run: npm ci
 
+      - name: Build native compression assets
+        run: npm run build:compression:host
+
       - name: Build and test
+        env:
+          MARMOTTA_REQUIRE_COMPRESSION_TESTS: '1'
         run: npm test
 
   packaging:

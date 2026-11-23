@@ -4,7 +4,7 @@
 // embedded as an asset, and both are injected into a copy of this Node.js runtime. Requires
 // Node.js 25.5 or newer for `node --build-sea`.
 import { spawnSync } from 'node:child_process';
-import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -29,6 +29,7 @@ const output = process.argv[2]
 const bundle = join(root, 'build', 'marmotta.bundle.mjs');
 const headers = join(root, 'build', 'node-api-headers.tar');
 const seaConfig = join(root, 'build', 'sea-config.json');
+const compressionDir = resolve(process.env.MARMOTTA_COMPRESSION_DIR ?? join(root, 'dist', 'compression'));
 
 try {
   await access(headers);
@@ -36,6 +37,12 @@ try {
   console.error(`Missing ${headers}. Run "npm run build:headers" first.`);
   process.exit(1);
 }
+let compressionAssets = [];
+try {
+  compressionAssets = (await readdir(compressionDir))
+    .filter((name) => /^(producer-|stub-)/.test(name) || name === 'UPSTREAM-NOTICE.md' || name === 'UPSTREAM-LICENSE')
+    .sort();
+} catch { /* Compression support is optional for local standalone builds. */ }
 
 // Everything the CLI uses must be in the bundle: a SEA resolves only built-in modules at runtime.
 await rm(bundle, { force: true });
@@ -68,7 +75,10 @@ await writeFile(seaConfig, `${JSON.stringify({
   // The executable runs inside the user's projects: NODE_OPTIONS must not change its behavior.
   execArgvExtension: 'none',
   useCodeCache: true,
-  assets: { 'node-api-headers.tar': headers },
+  assets: Object.fromEntries([
+    ['node-api-headers.tar', headers],
+    ...compressionAssets.map((asset) => [asset, join(compressionDir, asset)]),
+  ]),
 }, null, 2)}\n`);
 
 const result = spawnSync(process.execPath, ['--build-sea', seaConfig], { stdio: 'inherit' });

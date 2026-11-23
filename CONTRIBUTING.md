@@ -58,6 +58,16 @@ tag must match the version in `package.json` or the workflow fails. Maintainers
 can also run the workflow manually from the Actions tab to test it before
 tagging; the binaries are then only uploaded as workflow artifacts.
 
+To test `marmotta build --compress` locally, install the Rust toolchain used by
+the release workflow and run `npm run build:compression` before `npm test`. This
+builds the helpers for the current host and places them in `dist/compression`.
+
+Before running `npm run publish:all`, collect the native helpers from the
+`Release binaries` workflow run for the same commit. Each of its eight
+`marmotta-compression-<rust-triple>` artifacts contains a producer, loader stub,
+and upstream license files. Copy the contents of all eight artifacts into
+`dist/compression`.
+
 ## Changes to this arrangement
 
 This is an experiment and feedback is welcome! This document may also be subject

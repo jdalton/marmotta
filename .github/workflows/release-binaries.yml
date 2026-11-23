@@ -24,35 +24,43 @@ jobs:
         include:
           - target: bun-linux-x64
             platform: linux-x64
+            rust_target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             smoke: full
           - target: bun-linux-arm64
             platform: linux-arm64
+            rust_target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
             smoke: full
           - target: bun-linux-x64-musl
             platform: linux-x64-musl
+            rust_target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
             smoke: alpine
           - target: bun-linux-arm64-musl
             platform: linux-arm64-musl
+            rust_target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
             smoke: alpine
           - target: bun-darwin-x64
             platform: darwin-x64
+            rust_target: x86_64-apple-darwin
             runner: macos-15-intel
             smoke: full
           - target: bun-darwin-arm64
             platform: darwin-arm64
+            rust_target: aarch64-apple-darwin
             runner: macos-latest
             smoke: full
           - target: bun-windows-x64
             platform: windows-x64
+            rust_target: x86_64-pc-windows-msvc
             runner: windows-latest
             smoke: full
             ext: .exe
           - target: bun-windows-arm64
             platform: windows-arm64
+            rust_target: aarch64-pc-windows-msvc
             runner: windows-11-arm
             smoke: full
             ext: .exe
@@ -76,6 +84,14 @@ jobs:
           # Pinned so release artifacts are reproducible; bump deliberately.
           bun-version: 1.4.3
 
+      - name: Set up Rust
+        shell: bash
+        run: rustup toolchain install nightly-2026-09-26 --profile minimal --target ${{ matrix.rust_target }}
+
+      - name: Install musl linker
+        if: contains(matrix.rust_target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Install dependencies
         run: npm ci
 
@@ -95,6 +111,49 @@ jobs:
         shell: bash
         run: npm run build:headers
 
+      - name: Build compression assets
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          if [[ "$RUST_TARGET" == *musl* ]]; then
+            npm run build:compression -- --producer-target="$RUST_TARGET" --producer-only
+          else
+            npm run build:compression -- --producer-target="$RUST_TARGET"
+          fi
+
+      - name: Build dynamic musl stub on Alpine
+        if: contains(matrix.rust_target, 'musl')
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          docker run --rm \
+            --mount "type=bind,src=$PWD,dst=/src,readonly" \
+            --mount "type=bind,src=$PWD/dist/compression,dst=/out" \
+            -e RUST_TARGET \
+            -e OWNER="$(id -u):$(id -g)" \
+            -w /src \
+            rust:1.99-alpine3.22 \
+            sh -ec '
+              apk add --no-cache build-base nodejs
+              rustup toolchain install nightly-2026-09-26 --profile minimal --target "$RUST_TARGET"
+              CARGO_TARGET_DIR=/tmp/marmotta-target \
+                MARMOTTA_COMPRESSION_DIR=/out \
+                MARMOTTA_RUST_TOOLCHAIN=nightly-2026-09-26 \
+                node scripts/build-compression.mjs --stub-only --producer-target="$RUST_TARGET" --stubs="$RUST_TARGET"
+              chown -R "$OWNER" /out
+            '
+
+      - name: Validate compression assets
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          HOST_EXE_SUFFIX: ${{ matrix.ext }}
+        run: |
+          test -f "dist/compression/producer-${RUST_TARGET}${HOST_EXE_SUFFIX}"
+          test -f "dist/compression/stub-${RUST_TARGET}.node"
+
       - name: Resolve the executable name
         id: meta
         shell: bash
@@ -107,6 +166,8 @@ jobs:
       - name: Smoke test (native)
         if: matrix.smoke == 'full'
         shell: bash
+        env:
+          MARMOTTA_SMOKE_COMPRESS: '1'
         run: node scripts/smoke.mjs "out/${{ steps.meta.outputs.file }}"
 
       - name: Smoke test (Alpine container)
@@ -131,6 +192,13 @@ jobs:
         with:
           name: marmotta-${{ matrix.platform }}
           path: out/marmotta-*
+          if-no-files-found: error
+
+      - name: Upload compression assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: marmotta-compression-${{ matrix.rust_target }}
+          path: dist/compression/*
           if-no-files-found: error
 
   release:
@@ -222,7 +290,8 @@ jobs:
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
-          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
           node scripts/packages.mjs \
             --version "$version" \
             --sums dist/SHA256SUMS \

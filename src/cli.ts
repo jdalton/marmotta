@@ -1,10 +1,22 @@
 #!/usr/bin/env node
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { build, clean, configure, type BuildOptions } from './build.js';
+import type { BuildOptions } from './build.js';
 import { CliArgumentError, CliCommandError, normalizeError } from './errors.js';
-import { ensureZig, listZigVersions, removeZigVersion } from './toolchain.js';
-import { logger } from './logger.js';
+import type { LogFormat } from './logger.js';
 import { MARMOTTA_VERSION } from './version.js';
+
+const require = createRequire(import.meta.url);
+type LoggerInstance = typeof import('./logger.js').logger;
+let cliLogger: LoggerInstance | undefined;
+let cliFormat: LogFormat = 'text';
+
+function getLogger(format: LogFormat): LoggerInstance {
+  cliLogger ??= (require('./logger.js') as typeof import('./logger.js')).logger;
+  cliLogger.setFormat(format);
+  cliLogger.checkLevel();
+  return cliLogger;
+}
 
 const usage = `Marmotta - build tool for Node.js addons with Zig
 
@@ -24,6 +36,7 @@ Options:
   -o, --output-dir    directory where <name>.node is generated
       --target        Zig target, e.g. aarch64-macos or x86_64-windows
       --debug         compile without optimizations
+      --compress     emit a self-loading addon with a zstd payload
       --json          output machine-readable JSON lines
   -h, --help          show this help
   -v, --version       show the version
@@ -31,6 +44,7 @@ Options:
 Environment:
   MARMOTTA_HOME       absolute path that replaces ~/.marmotta as Marmotta's root directory
   MARMOTTA_ZIG_DIR    absolute path of an existing Zig installation to use instead of downloading Zig
+  MARMOTTA_COMPRESSION_DIR  directory containing local compression producer/stub assets
   MARMOTTA_LOG        minimum log level: trace, debug, info (default), warn, error, fatal, silent`;
 
 type ParsedArgs = {
@@ -76,6 +90,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     else if (token === '--debug') {
       options.debug = true;
       commandOption = true;
+    } else if (token === '--compress') {
+      options.compress = true;
+      commandOption = true;
     } else if (token === '-C' || token === '--directory' || token === '-o' || token === '--output-dir' || token === '--target') {
       commandOption = true;
       const value = argv[index + 1];
@@ -103,6 +120,9 @@ function parseArgs(argv: string[]): ParsedArgs {
   if (command === undefined && commandOption && !help && !version) {
     fail(withUsage(new CliCommandError('Missing command')));
   }
+  if (options.compress && command !== 'build' && command !== 'rebuild' && !help && !version) {
+    fail(withUsage(new CliArgumentError('--compress can only be used with build or rebuild')));
+  }
   return {
     command: command ?? 'help',
     positional: rest,
@@ -117,42 +137,60 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
-  // The format is applied before any argument error is thrown, so that error and an invalid
-  // MARMOTTA_LOG warning are both reported in the requested format.
-  logger.setFormat(parsed.json ? 'json' : 'text');
-  logger.checkLevel();
+  const format = parsed.json ? 'json' : 'text';
+  cliFormat = format;
+  const logLevel = (process.env.MARMOTTA_LOG ?? '').trim().toLowerCase();
+  const needsLogger = parsed.error !== undefined
+    || (!parsed.help && !parsed.version)
+    || parsed.json
+    || (logLevel !== '' && !['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent'].includes(logLevel));
+  const logger = needsLogger ? getLogger(format) : undefined;
   if (parsed.error) throw parsed.error;
 
   if (parsed.help) {
-    logger.output(usage);
+    if (logger) logger.output(usage);
+    else console.log(usage);
     return;
   }
   if (parsed.version) {
-    logger.output(`marmotta ${MARMOTTA_VERSION}`);
+    if (logger) logger.output(`marmotta ${MARMOTTA_VERSION}`);
+    else console.log(`marmotta ${MARMOTTA_VERSION}`);
     return;
   }
+  const commandLogger = logger ?? getLogger(format);
 
   switch (parsed.command) {
-    case 'configure':
+    case 'configure': {
+      const { configure } = require('./build.js') as typeof import('./build.js');
       await configure(parsed.options);
       break;
-    case 'build':
+    }
+    case 'build': {
+      const { build } = require('./build.js') as typeof import('./build.js');
       await build(parsed.options);
       break;
-    case 'rebuild':
-      await clean(parsed.options);
+    }
+    case 'rebuild': {
+      const { build, clean } = require('./build.js') as typeof import('./build.js');
+      if (!parsed.options.compress) await clean(parsed.options);
       await build(parsed.options);
       break;
-    case 'clean':
+    }
+    case 'clean': {
+      const { clean } = require('./build.js') as typeof import('./build.js');
       await clean(parsed.options);
       break;
-    case 'install':
+    }
+    case 'install': {
+      const { ensureZig } = require('./toolchain.js') as typeof import('./toolchain.js');
       await ensureZig();
-      logger.output('Zig toolchain is ready.');
+      commandLogger.output('Zig toolchain is ready.');
       break;
+    }
     case 'list': {
+      const { listZigVersions } = require('./toolchain.js') as typeof import('./toolchain.js');
       const versions = await listZigVersions();
-      logger.output(versions.length > 0 ? 'Installed Zig versions' : 'No Zig versions installed by Marmotta.', {
+      commandLogger.output(versions.length > 0 ? 'Installed Zig versions' : 'No Zig versions installed by Marmotta.', {
         data: { versions },
         text: versions.length > 0 ? versions.join('\n') : undefined,
       });
@@ -163,8 +201,9 @@ async function main(): Promise<void> {
       if (!version) {
         throw new CliArgumentError('Specify the Zig version to remove.');
       }
+      const { removeZigVersion } = require('./toolchain.js') as typeof import('./toolchain.js');
       await removeZigVersion(version);
-      logger.output(`Removed Zig version ${version}.`);
+      commandLogger.output(`Removed Zig version ${version}.`);
       break;
     }
     default:
@@ -174,6 +213,7 @@ async function main(): Promise<void> {
 
 main().catch((error: unknown) => {
   const normalized = normalizeError(error);
+  const logger = getLogger(cliFormat);
   // Text mode keeps the historical "marmotta [CODE]: message" line and appends the usage block for
   // errors marked with withUsage(); the JSON record omits it so its message stays a single line.
   const base = `marmotta [${normalized.code}]: ${normalized.message}`;

@@ -4,7 +4,7 @@
 // target in its own job or loop over all of them from one. Pass --target to build a single target;
 // without it every supported target is built.
 import { spawnSync } from 'node:child_process';
-import { access, copyFile, mkdir, readFile, rm } from 'node:fs/promises';
+import { access, copyFile, mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,7 +19,6 @@ const allTargets = [
   'bun-windows-x64',
   'bun-windows-arm64',
 ];
-
 const targetIndex = process.argv.indexOf('--target');
 const targets = targetIndex === -1 ? allTargets : [process.argv[targetIndex + 1]];
 if (targets.some((target) => !allTargets.includes(target))) {
@@ -29,6 +28,7 @@ if (targets.some((target) => !allTargets.includes(target))) {
 
 const packageJson = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const headers = join(root, 'build', 'node-api-headers.tar');
+const compressionDir = resolve(process.env.MARMOTTA_COMPRESSION_DIR ?? join(root, 'dist', 'compression'));
 try {
   await access(headers);
 } catch {
@@ -40,6 +40,12 @@ try {
 // src/standalone.ts reads it from Bun.embeddedFiles. It is removed again after the build so a later
 // `npm publish` cannot ship it.
 const stagedHeaders = join(root, 'dist', 'node-api-headers.tar');
+let compressionAssets = [];
+try {
+  compressionAssets = (await readdir(compressionDir))
+    .filter((name) => /^(producer-|stub-)/.test(name) || name === 'UPSTREAM-NOTICE.md' || name === 'UPSTREAM-LICENSE')
+    .sort();
+} catch { /* Compression support is optional for local standalone builds. */ }
 await copyFile(headers, stagedHeaders);
 // A failed build must not skip the cleanup of the staged archive: `dist` is published to npm, so a
 // checkout that failed to build would otherwise ship dist/node-api-headers.tar on the next publish.
@@ -63,6 +69,7 @@ try {
       '--no-compile-autoload-dotenv',
       '--no-compile-autoload-bunfig',
       '--asset', stagedHeaders,
+      ...compressionAssets.flatMap((asset) => ['--asset', join(compressionDir, asset)]),
       '--outfile', output,
     ], { stdio: 'inherit' });
     if (result.status !== 0) {

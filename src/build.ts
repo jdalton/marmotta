@@ -1,16 +1,18 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, resolve } from 'node:path';
 import { loadProject, type ProjectConfig } from './project.js';
 import { createBuildDirectory, ensureZig, runZig } from './toolchain.js';
 import { resolveNodeApiHeaders } from './node-api-headers.js';
 import { hostImportsSource, readDefSymbols } from './windows-host.js';
 import { logger } from './logger.js';
+import { compressAddon } from './compress.js';
 
 export type BuildOptions = {
   directory: string;
   outputDir?: string;
   target?: string;
   debug?: boolean;
+  compress?: boolean;
 };
 
 function isCpp(source: string): boolean {
@@ -18,10 +20,12 @@ function isCpp(source: string): boolean {
 }
 
 function isWindowsTarget(target: string | undefined): boolean {
+  if (target?.toLowerCase() === 'native') return process.platform === 'win32';
   return target ? target.includes('windows') : process.platform === 'win32';
 }
 
 function isMacosTarget(target: string | undefined): boolean {
+  if (target?.toLowerCase() === 'native') return process.platform === 'darwin';
   return target ? target.includes('macos') || target.includes('darwin') : process.platform === 'darwin';
 }
 
@@ -73,15 +77,27 @@ async function compile(config: ProjectConfig, options: BuildOptions, cleanOnly: 
     }
 
     const linker = hasCpp ? 'c++' : 'cc';
+    const rawOutput = options.compress ? join(temporaryDir, `${config.name}.node`) : output;
+    await mkdir(dirname(output), { recursive: true });
     const args = [linker];
     if (isMacosTarget(options.target)) args.push('-shared', '-undefined', 'dynamic_lookup');
     else args.push('-shared');
-    args.push(...objects, '-o', output, ...config.linkerFlags);
+    args.push(...objects, '-o', rawOutput, ...config.linkerFlags);
     if (options.target) args.push('-target', options.target);
     if (!windowsTarget && !isMacosTarget(options.target)) args.push('-Xlinker', '--allow-shlib-undefined');
 
-    await mkdir(dirname(output), { recursive: true });
     await runZig(zig, args, options.directory);
+    if (options.compress) {
+      const staging = await mkdtemp(join(outputDir, '.marmotta-'));
+      try {
+        const stagedOutput = join(staging, `${config.name}.node`);
+        await compressAddon(rawOutput, stagedOutput, options.target, outputDir);
+        // Publish on the same filesystem after the producer succeeds.
+        await rename(stagedOutput, output);
+      } finally {
+        await rm(staging, { recursive: true, force: true });
+      }
+    }
     logger.output(`Addon built: ${output}`);
   } finally {
     await rm(temporaryDir, { recursive: true, force: true });

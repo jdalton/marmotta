@@ -6,6 +6,7 @@ coverage/
 *.node
 *.tgz
 .DS_Store
+/native/target/
 
 # Claude files
 CLAUDE.md

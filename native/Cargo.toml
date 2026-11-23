@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/napi-native-addon", "crates/napi-native-addon-stub", "crates/napi-compress"]
+
+[workspace.package]
+rust-version = "1.88"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+allow_attributes = "warn"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+
+[profile.release]
+lto = true
+
+[profile.addon-min]
+inherits = "release"
+opt-level = "z"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

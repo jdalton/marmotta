@@ -88,12 +88,20 @@ NAPI_MODULE(NODE_GYP_MODULE_NAME, Initialize)
   run(['build', '-C', directory], { cwd: directory, env: environment });
 
   const addon = join(directory, 'hello.node');
-  const loaded = spawnSync(process.execPath, ['-e', `console.log(require(${JSON.stringify(addon)}).hello())`], {
+  const load = () => spawnSync(process.execPath, ['-e', `console.log(require(${JSON.stringify(addon)}).hello())`], {
     encoding: 'utf8',
-    env: cleanEnv,
+    env: { ...cleanEnv, MARMOTTA_NATIVE_CACHE: join(home, 'native-cache') },
   });
+  const loaded = load();
   assert.equal(loaded.status, 0, `the compiled addon must load in Node.js\n${loaded.stderr}`);
   assert.equal(loaded.stdout.trim(), 'world');
+  if (process.env.MARMOTTA_SMOKE_COMPRESS === '1') {
+    run(['rebuild', '--compress', '-C', directory], { cwd: directory, env: environment });
+    assert.ok((await readFile(addon)).includes(Buffer.from('NAPCSECT')));
+    const unpacked = load();
+    assert.equal(unpacked.status, 0, `the compressed addon must load in Node.js\n${unpacked.stderr}`);
+    assert.equal(unpacked.stdout.trim(), 'world');
+  }
 
   run(['clean', '-C', directory], { cwd: directory, env: environment });
   run(['rebuild', '-C', directory], { cwd: directory, env: environment });

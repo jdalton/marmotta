@@ -41,7 +41,7 @@ Marmotta builds Node.js native addons written in C or C++ with [Node-API](https:
 
 ## Requirements
 
-- Node.js 20 or later and npm. To run Marmotta without Node.js, use a [standalone binary](#standalone-binary) instead.
+- Node.js 20.19 or later and npm. To run Marmotta without Node.js, use a [standalone binary](#standalone-binary) instead.
 - A C or C++ Node-API addon source file (`.c`, `.cc`, `.cpp`, or `.cxx`).
 - `tar` and internet access when Marmotta needs to download Zig.
 
@@ -239,6 +239,7 @@ Run `marmotta --help` or `npx marmotta --help` for the built-in usage summary.
 | `-o, --output-dir <path>` | `build`, `rebuild`, `clean` | Override `outputDir`. Relative paths are resolved from the project directory. |
 | `--target <triple>` | `build`, `rebuild` | Zig target triple used for cross-compilation. |
 | `--debug` | `build`, `rebuild` | Compile without optimization and include debug information (`-O0 -g` instead of `-O2`). |
+| `--compress` | `build`, `rebuild` | Embed the compiled addon as a zstd payload in a self-loading `.node` file. |
 | `--json` | Any command | Emit machine-readable JSON Lines instead of plain text. Recognized before or after the command. |
 | `-h, --help` | Any command | Show help. |
 | `-v, --version` | Top-level command | Show the Marmotta version. |
@@ -252,6 +253,18 @@ npx marmotta build --target aarch64-macos
 Use `--json` in CI when another process needs to consume Marmotta's output; see [Logging](#logging) for the record format and the `MARMOTTA_LOG` variable.
 
 Use a target triple supported by Zig for the intended target. Cross-compilation does not run the resulting addon on the host; load it on a compatible target system.
+
+### Compressed addons
+
+```sh
+marmotta build --compress
+```
+
+The output is a single `.node` file. Load it with `require()` as usual. On first load, it writes the original addon to a private cache in the system temporary directory. Set `MARMOTTA_NATIVE_CACHE` to choose another cache directory. On writable Btrfs installations, the addon can replace itself with the original stored using filesystem compression. Btrfs uses zstd when the volume already supports it and zlib otherwise.
+
+Compression works with addons that export the current Node-API initializer and can load without libraries relative to the original `.node` file. Link sibling libraries statically before using `--compress`. Use this option for larger addons, and compare the resulting npm tarball and first-load time for your project.
+
+Compressed builds use native helpers for the build machine and addon target. npm releases contain the supported target helpers. Standalone releases embed helpers for their own platform. Set `MARMOTTA_COMPRESSION_DIR` to use a different helper directory, such as when cross-compiling from a standalone build.
 
 ### Logging
 

@@ -2,7 +2,7 @@
 // Publishes the package to npm under every name listed in PACKAGE_NAMES.
 // Usage: node scripts/publish.mjs [--dry-run] [--tag <tag>] [--otp <code>] [--skip-tests]
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const PACKAGE_NAMES = ['marmotta', '@napi-bindings/marmotta'];
@@ -41,6 +41,23 @@ const options = parseArgs(process.argv.slice(2));
 const originalManifest = readFileSync(manifestPath, 'utf8');
 const manifest = JSON.parse(originalManifest);
 const failures = [];
+
+// Compression is an optional feature at development time, but published CLI packages need the
+// prebuilt native files. Do not compile Rust here: release packaging supplies this collection.
+const compressionDir = `${root}/dist/compression`;
+const requiredAssets = [
+  'aarch64-apple-darwin', 'x86_64-apple-darwin',
+  'aarch64-unknown-linux-gnu', 'x86_64-unknown-linux-gnu',
+  'aarch64-unknown-linux-musl', 'x86_64-unknown-linux-musl',
+  'aarch64-pc-windows-msvc', 'x86_64-pc-windows-msvc',
+].flatMap((triple) => [
+  `stub-${triple}.node`,
+  `producer-${triple}${triple.includes('windows') ? '.exe' : ''}`,
+  'UPSTREAM-NOTICE.md',
+  'UPSTREAM-LICENSE',
+]);
+const missingAsset = requiredAssets.find((asset) => !existsSync(`${compressionDir}/${asset}`));
+if (missingAsset) fail(`missing prebuilt compression asset ${missingAsset} in dist/compression`);
 
 try {
   console.log(options.skipTests ? 'Building...' : 'Building and testing...');
